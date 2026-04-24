@@ -14,10 +14,13 @@ app = FastAPI(
 STORAGE_DIR = "local_storage"
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
+
 @app.get("/")
 async def health_check():
     return {"status": "online", "message": "The analytics engine is listening."}
 
+
+# logic for rest api call for upload replay, TODO: save to database and check for duplicates, cannot upload same file
 @app.post("/upload_replay/")
 async def upload_replay(file: UploadFile = File(...)):
     # 1. Save file to local storage
@@ -41,6 +44,8 @@ async def upload_replay(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# parse the selected replay using rrrocket and then extract the data from the replay
 async def parse_replay(path: str):
     temp_json_path = f"{path}.json"
     
@@ -64,6 +69,8 @@ async def parse_replay(path: str):
     
     return stats
 
+
+# get user stats from json file
 def extract_match_data(replay_json):
     props = replay_json.get("properties", {})
     player_stats_raw = props.get("PlayerStats", [])
@@ -114,6 +121,9 @@ def extract_match_data(replay_json):
     }
 
 
+
+
+# login logic eventually 
 @app.post("/login/")
 async def login():
     return {"Token": "MyToken"}
