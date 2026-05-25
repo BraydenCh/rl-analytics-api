@@ -4,12 +4,34 @@ import os
 import json
 import subprocess
 import uuid
+from contextlib import asynccontextmanager
+from supabase import create_client, Client
+from dotenv import load_dotenv
+state = {}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    load_dotenv()
+
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
+    if not url or not key:
+        raise RuntimeError("Database Environment Vars Missing")
+    
+    state["supabase"] = create_client(url, key)
+    print("Created Permanent Supabase Client")
+
+    yield
+
+    state.clear()
+    print("Closed Supabase Client")
 
 
 app = FastAPI(
     title="Rocket League Analytics API",
     description="Backend engine for parsing and serving game telemetry.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 STORAGE_DIR = "local_storage"
