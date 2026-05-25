@@ -4,7 +4,7 @@ import os
 import json
 import subprocess
 import uuid
-
+from mangum import Mangum  # <-- Import Mangum
 app = FastAPI(
     title="Rocket League Analytics API",
     description="Backend engine for parsing and serving game telemetry.",
@@ -127,3 +127,5 @@ def extract_match_data(replay_json):
 @app.post("/login/")
 async def login():
     return {"Token": "MyToken"}
+
+handler = Mangum(app)
