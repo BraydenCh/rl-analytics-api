@@ -2,5 +2,4 @@ fastapi
 python-multipart
 uvicorn
 supabase
-contextlib
 dotenv
