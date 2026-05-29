@@ -7,7 +7,14 @@ import uuid
 from contextlib import asynccontextmanager
 from supabase import create_client, Client
 from dotenv import load_dotenv
+from fastapi import Response, Query
+from fastapi.responses import RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
+import httpx
 state = {}
+
+
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,8 +41,57 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"], # Your Next.js URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 STORAGE_DIR = "local_storage"
 os.makedirs(STORAGE_DIR, exist_ok=True)
+
+
+@app.get("/auth/callback/epic")
+async def auth_callback(
+    code: str = Query(None), 
+    state: str = Query(None)
+):
+    if not code:
+        return {"error": "Missing code"}
+
+    payload = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": "YOUR_REDIRECT_URI",
+        # ... other epic games required params ...
+    }
+
+    # 1. Make the request to Epic Games
+    async with httpx.AsyncClient() as client:
+        # RENAME THIS VARIABLE to 'epic_response' (or something similar)
+        epic_response = await client.post("https://api.epicgames.dev/epic/oauth/v2/token", data=payload)
+        
+        # 2. Call .json() on the epic_response, NOT a FastAPI response
+        token_data = epic_response.json()
+        
+    access_token = token_data.get("access_token")
+
+    # 3. Create the FastAPI RedirectResponse explicitly
+    redirect = RedirectResponse(url="http://localhost:3000/")
+
+    # 4. Set the cookie on the redirect object
+    redirect.set_cookie(
+        key="epic_session",
+        value=access_token,
+        httponly=True,
+        secure=False, # Set to True in production
+        samesite="lax",
+    )
+
+    return redirect
 
 
 @app.get("/")
