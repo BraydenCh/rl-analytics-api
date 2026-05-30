@@ -8,15 +8,17 @@ import base64
 from contextlib import asynccontextmanager
 from supabase import create_client, Client
 from dotenv import load_dotenv
-from fastapi import Response, Query
-from fastapi.responses import RedirectResponse
+from fastapi import Request, Response, Query
+from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import requests
 state = {}
 
 
-
+# We will use your existing state dictionary to store sessions
+if "sessions" not in state:
+    state["sessions"] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -59,7 +61,7 @@ os.makedirs(STORAGE_DIR, exist_ok=True)
 @app.get("/auth/callback/epic")
 async def auth_callback(
     code: str = Query(None), 
-    state: str = Query(None)
+    oath_state: str = Query(None, alias="state")
 ):
     if not code:
         return {"error": "Missing code"}
@@ -103,26 +105,29 @@ async def auth_callback(
 
     access_token = token_data.get("access_token")
     account_id = token_data.get("account_id")
-    print("Successfully retrieved token:", token_data)
+    
+    # Grab the exact expiration time (default to 2 hours just in case it's missing)
+    expires_in = token_data.get("expires_in", 7200) 
 
-    # 3. Get user information
-    user_info = await get_user_information(access_token=access_token, account_id=account_id)
-    print(user_info)
-    #login(user_info)
+    session_id = str(uuid.uuid4())
 
-    # 3. Create the FastAPI RedirectResponse explicitly
+    state["sessions"][session_id] = {
+        "access_token": access_token,
+        "account_id": account_id
+    }
+
     redirect = RedirectResponse(url="http://localhost:3000/")
 
-    # 4. Set the cookie on the redirect object
+    # Sync the cookie's lifespan perfectly with the token's lifespan
     redirect.set_cookie(
-            key="epic_session",
-            value=access_token, # (Or issue your own custom JWT here)
-            httponly=True,
-            secure=False,       # Set to True when you deploy to production (HTTPS)
-            samesite="lax",
-            max_age=3600 * 24,  # Cookie lasts for 1 day
-            path="/"            # <-- This is required for Next.js to read it globally
-        )
+        key="epic_session",
+        value=session_id,   
+        httponly=True,
+        secure=False,       
+        samesite="lax",
+        max_age=expires_in, # <--- BOOM. Perfectly synced.
+        path="/"            
+    )
 
     return redirect
 
@@ -148,6 +153,45 @@ async def get_user_information(access_token: str, account_id:str):
         
         # 5. Return the parsed JSON array
         return response.json()
+
+@app.get("/user_info")
+async def user_info(request: Request):
+    # 1. Get the secure session ID from the browser's cookie
+    session_id = request.cookies.get("epic_session")
+
+    # 2. Check if the session exists in our backend state
+    # (Using .get() on state prevents a KeyError if the server restarted and "sessions" is empty)
+    sessions = state.get("sessions", {})
+    if not session_id or session_id not in sessions:
+        raise HTTPException(status_code=401, detail="Invalid or missing session")
+
+    # 3. Retrieve the secure Epic credentials from memory
+    session_data = sessions[session_id]
+    access_token = session_data["access_token"]
+    account_id = session_data["account_id"]
+
+    # 4. Fetch the real user data from Epic using your existing helper function
+    user_data = await get_user_information(access_token=access_token, account_id=account_id)
+
+    # 5. Handle expired tokens (e.g., the 2 hours passed)
+    if not user_data:
+        # Clean up the dead session so it doesn't clutter your server memory
+        del state["sessions"][session_id]
+        raise HTTPException(status_code=401, detail="Epic token expired or invalid")
+    print(user_data)
+    # 6. Return the live Epic Games user profile to your frontend
+    return user_data[0]
+@app.post("/auth/logout")
+async def logout():
+    response = JSONResponse({"success": True})
+
+    response.delete_cookie(
+        key="epic_session",
+        path="/"
+    )
+
+    return response
+
 
 @app.get("/")
 async def health_check():
