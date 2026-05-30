@@ -102,10 +102,12 @@ async def auth_callback(
         raise HTTPException(status_code=epic_response.status_code, detail=token_data)
 
     access_token = token_data.get("access_token")
-    #print("Successfully retrieved token:", token_data)
-    # 3. Get user information
-    #user_info = await get_user_information(access_token=access_token)
+    account_id = token_data.get("account_id")
+    print("Successfully retrieved token:", token_data)
 
+    # 3. Get user information
+    user_info = await get_user_information(access_token=access_token, account_id=account_id)
+    print(user_info)
     #login(user_info)
 
     # 3. Create the FastAPI RedirectResponse explicitly
@@ -113,12 +115,14 @@ async def auth_callback(
 
     # 4. Set the cookie on the redirect object
     redirect.set_cookie(
-        key="epic_session",
-        value=access_token,
-        httponly=True,
-        secure=False, # Set to True in production
-        samesite="lax",
-    )
+            key="epic_session",
+            value=access_token, # (Or issue your own custom JWT here)
+            httponly=True,
+            secure=False,       # Set to True when you deploy to production (HTTPS)
+            samesite="lax",
+            max_age=3600 * 24,  # Cookie lasts for 1 day
+            path="/"            # <-- This is required for Next.js to read it globally
+        )
 
     return redirect
 
@@ -126,8 +130,24 @@ async def auth_callback(
 async def login(user_info: dict):
     None
 
-async def get_user_information(access_token: str):
-    url = "https://api.epicgames.dev/epic/id/v2/accounts"
+async def get_user_information(access_token: str, account_id:str):
+    print("HELOOOOOOOOOO )))))))))))))")
+    print("Account ID: ", account_id)
+    url = f"https://api.epicgames.dev/epic/id/v2/accounts?accountId={account_id}"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+    }
+    async with httpx.AsyncClient() as client:
+        # 3. Make a GET request (not a POST)
+        response = await client.get(url, headers=headers)
+
+        # 4. Catch any expired token or permission errors
+        if response.status_code != 200:
+            print("Error fetching user profile:", response.text)
+            return None
+        
+        # 5. Return the parsed JSON array
+        return response.json()
 
 @app.get("/")
 async def health_check():
