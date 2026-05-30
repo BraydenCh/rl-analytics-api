@@ -4,6 +4,7 @@ import os
 import json
 import subprocess
 import uuid
+import base64
 from contextlib import asynccontextmanager
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -11,6 +12,7 @@ from fastapi import Response, Query
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
+import requests
 state = {}
 
 
@@ -62,22 +64,49 @@ async def auth_callback(
     if not code:
         return {"error": "Missing code"}
 
+    # 1. Fetch credentials from your environment variables
+    client_id = os.environ.get("EPIC_CLIENT_ID")
+    client_secret = os.environ.get("EPIC_CLIENT_SECRET")
+    
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=500, detail="Missing Epic credentials in environment")
+
+    # 2. Base64 encode the Client ID and Client Secret
+    auth_string = f"{client_id}:{client_secret}"
+    base64_auth = base64.b64encode(auth_string.encode("utf-8")).decode("utf-8")
+
+    # 3. Setup the payload and required headers
     payload = {
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": "YOUR_REDIRECT_URI",
-        # ... other epic games required params ...
+        "redirect_uri": os.environ.get("EPIC_REDIRECT_URI", "YOUR_REDIRECT_URI"), 
     }
 
-    # 1. Make the request to Epic Games
+    headers = {
+        "Authorization": f"Basic {base64_auth}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
+    # 4. Make the request to Epic Games with the new headers
     async with httpx.AsyncClient() as client:
-        # RENAME THIS VARIABLE to 'epic_response' (or something similar)
-        epic_response = await client.post("https://api.epicgames.dev/epic/oauth/v2/token", data=payload)
+        epic_response = await client.post(
+            "https://api.epicgames.dev/epic/oauth/v2/token", 
+            data=payload,
+            headers=headers
+        )
         
-        # 2. Call .json() on the epic_response, NOT a FastAPI response
         token_data = epic_response.json()
         
+    if epic_response.status_code != 200:
+        print("Epic Token Error:", token_data)
+        raise HTTPException(status_code=epic_response.status_code, detail=token_data)
+
     access_token = token_data.get("access_token")
+    #print("Successfully retrieved token:", token_data)
+    # 3. Get user information
+    #user_info = await get_user_information(access_token=access_token)
+
+    #login(user_info)
 
     # 3. Create the FastAPI RedirectResponse explicitly
     redirect = RedirectResponse(url="http://localhost:3000/")
@@ -93,6 +122,12 @@ async def auth_callback(
 
     return redirect
 
+
+async def login(user_info: dict):
+    None
+
+async def get_user_information(access_token: str):
+    url = "https://api.epicgames.dev/epic/id/v2/accounts"
 
 @app.get("/")
 async def health_check():
