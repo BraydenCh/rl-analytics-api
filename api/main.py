@@ -6,13 +6,14 @@ import subprocess
 import uuid
 import base64
 from contextlib import asynccontextmanager
-from supabase import create_client, Client
+from supabase import create_client, Client, create_async_client
 from dotenv import load_dotenv
 from fastapi import Request, Response, Query
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import requests
+from datetime import datetime, timezone
 state = {}
 
 
@@ -29,7 +30,7 @@ async def lifespan(app: FastAPI):
     if not url or not key:
         raise RuntimeError("Database Environment Vars Missing")
     
-    state["supabase"] = create_client(url, key)
+    state["supabase"] = await create_async_client(url, key)
     print("Created Permanent Supabase Client")
 
     yield
@@ -109,6 +110,15 @@ async def auth_callback(
     # Grab the exact expiration time (default to 2 hours just in case it's missing)
     expires_in = token_data.get("expires_in", 7200) 
 
+    # get user information
+    user_info = await get_user_information(access_token= access_token, account_id= account_id)
+    # attempt login
+    success = await insert_or_update_user(user_info=user_info[0])
+    if success != 200:
+        print("Supabase Login Error")
+        raise HTTPException(status_code=success)
+
+
     session_id = str(uuid.uuid4())
 
     state["sessions"][session_id] = {
@@ -132,8 +142,51 @@ async def auth_callback(
     return redirect
 
 
-async def login(user_info: dict):
-    None
+async def insert_or_update_user(user_info: dict):
+    # 1. Safely extract variables first
+    account_id = user_info.get("accountId")
+    display_name = user_info.get("displayName")
+    print(account_id)
+    print(display_name)
+
+    inserting_user_info = {
+        "epic_account_id": account_id,
+        "display_name": display_name,
+        "last_login": datetime.now(timezone.utc).isoformat()
+    }
+
+    supabase = state.get("supabase")
+    if not supabase:
+        return 400
+
+    if not account_id or not display_name:
+        return 400
+    try:
+        # 2. Check if the user already exists
+        response = await supabase.table("users").select("epic_account_id").eq("epic_account_id", account_id).execute()
+        user_exists = len(response.data) > 0
+
+        if user_exists:
+            # User exists: Update their information
+            await supabase.table("users").update(inserting_user_info).eq("epic_account_id", account_id).execute()
+            print(f"Updated existing user: {account_id}")
+            
+        else:
+            # User does not exist: Insert into 'players' FIRST
+            player_info = {
+                "epic_id": account_id,
+            }
+            await supabase.table("players").insert(player_info).execute()
+            
+            # THEN insert into 'users'
+            await supabase.table("users").insert(inserting_user_info).execute()
+            
+            print(f"Inserted new player profile and user: {account_id}")
+
+        return 200
+    except Exception as e:
+        print(f"Database operation failed: {e}")
+        return 500
 
 async def get_user_information(access_token: str, account_id:str):
     print("HELOOOOOOOOOO )))))))))))))")
@@ -181,6 +234,8 @@ async def user_info(request: Request):
     print(user_data)
     # 6. Return the live Epic Games user profile to your frontend
     return user_data[0]
+
+
 @app.post("/auth/logout")
 async def logout():
     response = JSONResponse({"success": True})
