@@ -1,4 +1,5 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+import re
+from fastapi import Cookie, FastAPI, File, UploadFile, HTTPException
 import shutil
 import os
 import json
@@ -6,18 +7,17 @@ import subprocess
 import uuid
 import base64
 from contextlib import asynccontextmanager
-from supabase import create_client, Client, create_async_client
+from supabase import create_async_client
 from dotenv import load_dotenv
-from fastapi import Request, Response, Query
+from fastapi import Request, Query
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
-import requests
 from datetime import datetime, timezone
+import urllib
+
 state = {}
 
-
-# We will use your existing state dictionary to store sessions
 if "sessions" not in state:
     state["sessions"] = {}
 
@@ -46,10 +46,9 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"], # Your Next.js URL
+    allow_origins=["http://localhost:3000"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -58,27 +57,143 @@ app.add_middleware(
 STORAGE_DIR = "local_storage"
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
+STEAM_OPENID_URL = "https://steamcommunity.com/openid/login"
+REALM = "http://localhost:8000"
+RETURN_TO = "http://localhost:8000/auth/steam/callback"
+FRONTEND_PROFILE_URL = "http://localhost:3000/profile"
+
+
+# ==========================================
+# STEAM AUTHENTICATION & LINKING
+# ==========================================
+
+@app.get("/auth/login/steam")
+async def steam_login():
+    params = {
+        "openid.ns": "http://specs.openid.net/auth/2.0",
+        "openid.mode": "checkid_setup",
+        "openid.return_to": RETURN_TO,
+        "openid.realm": REALM,
+        "openid.identity": "http://specs.openid.net/auth/2.0/identifier_select",
+        "openid.claimed_id": "http://specs.openid.net/auth/2.0/identifier_select",
+    }
+    
+    query_string = urllib.parse.urlencode(params)
+    redirect_url = f"{STEAM_OPENID_URL}?{query_string}"
+    return RedirectResponse(url=redirect_url)
+
+@app.get("/auth/steam/callback")
+async def steam_callback(request: Request, epic_session: str = Cookie(None)):
+    params = dict(request.query_params)
+    
+    if not params or params.get("openid.mode") != "id_res":
+        raise HTTPException(status_code=400, detail="Invalid Steam OpenID response")
+
+    verify_params = params.copy()
+    verify_params["openid.mode"] = "check_authentication"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(STEAM_OPENID_URL, data=verify_params)
+        
+    if "is_valid:true" not in response.text:
+        raise HTTPException(status_code=401, detail="Steam authentication signature failed")
+
+    claimed_id = params.get("openid.claimed_id", "")
+    match = re.search(r"https?://steamcommunity\.com/openid/id/(\d+)", claimed_id)
+    
+    if not match:
+        raise HTTPException(status_code=400, detail="Could not extract Steam ID64")
+        
+    steam_id_64 = match.group(1)
+
+    # Resolve Session to internal IDs
+    if not epic_session or epic_session not in state.get("sessions", {}):
+        raise HTTPException(status_code=401, detail="Missing or invalid Epic session cookie")
+        
+    epic_id = state["sessions"][epic_session]["account_id"]
+    supabase = state["supabase"]
+
+    # 1. Get the internal player_id
+    player_resp = await supabase.table("players").select("id").eq("epic_id", epic_id).execute()
+    if not player_resp.data:
+        raise HTTPException(status_code=404, detail="Player record not found. Please log out and back in.")
+    
+    player_id = player_resp.data[0]["id"]
+
+    # 2. Upsert into the linked_accounts ledger
+    try:
+        existing = await supabase.table("linked_accounts").select("id").eq("player_id", player_id).eq("platform", "steam").execute()
+
+        if existing.data:
+            # Reactivate previously unlinked account
+            await supabase.table("linked_accounts").update({
+                "platform_id": steam_id_64,
+                "is_active": True,
+                "unlinked_at": None,
+                "linked_at": datetime.now(timezone.utc).isoformat()
+            }).eq("id", existing.data[0]["id"]).execute()
+        else:
+            # First time linking
+            await supabase.table("linked_accounts").insert({
+                "player_id": player_id,
+                "platform": "steam",
+                "platform_id": steam_id_64,
+                "is_active": True
+            }).execute()
+
+    except Exception as e:
+        print(f"DB Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save account link to ledger.")
+
+    return RedirectResponse(url=FRONTEND_PROFILE_URL)
+
+@app.post("/auth/steam/unlink")
+async def steam_unlink(epic_session: str = Cookie(None)):
+    if not epic_session or epic_session not in state.get("sessions", {}):
+        raise HTTPException(status_code=401, detail="Authentication required.")
+        
+    epic_id = state["sessions"][epic_session]["account_id"]
+    supabase = state["supabase"]
+
+    try:
+        player_resp = await supabase.table("players").select("id").eq("epic_id", epic_id).execute()
+        if not player_resp.data:
+            raise HTTPException(status_code=404, detail="Player record not found.")
+        
+        player_id = player_resp.data[0]["id"]
+
+        # Soft-delete the connection by flipping the active flag
+        await supabase.table("linked_accounts").update({
+            "is_active": False,
+            "unlinked_at": datetime.now(timezone.utc).isoformat()
+        }).eq("player_id", player_id).eq("platform", "steam").eq("is_active", True).execute()
+          
+    except Exception as e:
+        print(f"DB Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to sever link.")
+
+    # A simple redirect back to the profile page upon successful unlinking
+    return RedirectResponse(url=FRONTEND_PROFILE_URL, status_code=303)
+
+
+# ==========================================
+# EPIC GAMES AUTHENTICATION & DB UPSERT
+# ==========================================
 
 @app.get("/auth/callback/epic")
-async def auth_callback(
-    code: str = Query(None), 
-    oath_state: str = Query(None, alias="state")
-):
+async def auth_callback(code: str = Query(None), oath_state: str = Query(None, alias="state")):
     if not code:
         return {"error": "Missing code"}
 
-    # 1. Fetch credentials from your environment variables
     client_id = os.environ.get("EPIC_CLIENT_ID")
     client_secret = os.environ.get("EPIC_CLIENT_SECRET")
     
     if not client_id or not client_secret:
         raise HTTPException(status_code=500, detail="Missing Epic credentials in environment")
 
-    # 2. Base64 encode the Client ID and Client Secret
     auth_string = f"{client_id}:{client_secret}"
     base64_auth = base64.b64encode(auth_string.encode("utf-8")).decode("utf-8")
 
-    # 3. Setup the payload and required headers
     payload = {
         "grant_type": "authorization_code",
         "code": code,
@@ -90,14 +205,8 @@ async def auth_callback(
         "Content-Type": "application/x-www-form-urlencoded"
     }
 
-    # 4. Make the request to Epic Games with the new headers
     async with httpx.AsyncClient() as client:
-        epic_response = await client.post(
-            "https://api.epicgames.dev/epic/oauth/v2/token", 
-            data=payload,
-            headers=headers
-        )
-        
+        epic_response = await client.post("https://api.epicgames.dev/epic/oauth/v2/token", data=payload, headers=headers)
         token_data = epic_response.json()
         
     if epic_response.status_code != 200:
@@ -106,36 +215,28 @@ async def auth_callback(
 
     access_token = token_data.get("access_token")
     account_id = token_data.get("account_id")
-    
-    # Grab the exact expiration time (default to 2 hours just in case it's missing)
     expires_in = token_data.get("expires_in", 7200) 
 
-    # get user information
-    user_info = await get_user_information(access_token= access_token, account_id= account_id)
-    # attempt login
+    user_info = await get_user_information(access_token=access_token, account_id=account_id)
+    
     success = await insert_or_update_user(user_info=user_info[0])
     if success != 200:
-        print("Supabase Login Error")
-        raise HTTPException(status_code=success)
-
+        raise HTTPException(status_code=success, detail="Database Login Error")
 
     session_id = str(uuid.uuid4())
-
     state["sessions"][session_id] = {
         "access_token": access_token,
         "account_id": account_id
     }
 
     redirect = RedirectResponse(url="http://localhost:3000/")
-
-    # Sync the cookie's lifespan perfectly with the token's lifespan
     redirect.set_cookie(
         key="epic_session",
         value=session_id,   
         httponly=True,
         secure=False,       
         samesite="lax",
-        max_age=expires_in, # <--- BOOM. Perfectly synced.
+        max_age=expires_in,
         path="/"            
     )
 
@@ -143,108 +244,116 @@ async def auth_callback(
 
 
 async def insert_or_update_user(user_info: dict):
-    # 1. Safely extract variables first
     account_id = user_info.get("accountId")
     display_name = user_info.get("displayName")
-    print(account_id)
-    print(display_name)
-
-    inserting_user_info = {
-        "epic_account_id": account_id,
-        "display_name": display_name,
-        "last_login": datetime.now(timezone.utc).isoformat()
-    }
 
     supabase = state.get("supabase")
-    if not supabase:
+    if not supabase or not account_id or not display_name:
         return 400
 
-    if not account_id or not display_name:
-        return 400
     try:
-        # 2. Check if the user already exists
-        response = await supabase.table("users").select("epic_account_id").eq("epic_account_id", account_id).execute()
-        user_exists = len(response.data) > 0
-
-        if user_exists:
-            # User exists: Update their information
-            await supabase.table("users").update(inserting_user_info).eq("epic_account_id", account_id).execute()
+        # 1. Handle the 'users' table (The Website Human)
+        user_resp = await supabase.table("users").select("id").eq("epic_account_id", account_id).execute()
+        user_id = None
+        
+        if user_resp.data:
+            user_id = user_resp.data[0]["id"]
+            await supabase.table("users").update({
+                "display_name": display_name,
+                "last_login": datetime.now(timezone.utc).isoformat()
+            }).eq("id", user_id).execute()
             print(f"Updated existing user: {account_id}")
-            
         else:
-            # User does not exist: Insert into 'players' FIRST
-            player_info = {
-                "epic_id": account_id,
-            }
-            await supabase.table("players").insert(player_info).execute()
-            
-            # THEN insert into 'users'
-            await supabase.table("users").insert(inserting_user_info).execute()
-            
-            print(f"Inserted new player profile and user: {account_id}")
+            new_user = await supabase.table("users").insert({
+                "epic_account_id": account_id,
+                "display_name": display_name,
+                "last_login": datetime.now(timezone.utc).isoformat()
+            }).execute()
+            user_id = new_user.data[0]["id"]
+            print(f"Inserted new user: {account_id}")
+
+        # 2. Handle the 'players' table (The In-Game Entity)
+        player_resp = await supabase.table("players").select("id").eq("epic_id", account_id).execute()
+        
+        if player_resp.data:
+            # They already exist in the database from a parsed replay. Link the User ID.
+            await supabase.table("players").update({
+                "user_id": user_id
+            }).eq("epic_id", account_id).execute()
+            print(f"Linked existing in-game player profile to user: {account_id}")
+        else:
+            # Brand new profile
+            await supabase.table("players").insert({
+                "user_id": user_id,
+                "epic_id": account_id
+            }).execute()
+            print(f"Inserted new player profile: {account_id}")
 
         return 200
     except Exception as e:
         print(f"Database operation failed: {e}")
         return 500
 
+
 async def get_user_information(access_token: str, account_id:str):
-    print("HELOOOOOOOOOO )))))))))))))")
-    print("Account ID: ", account_id)
     url = f"https://api.epicgames.dev/epic/id/v2/accounts?accountId={account_id}"
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-    }
+    headers = {"Authorization": f"Bearer {access_token}"}
+    
     async with httpx.AsyncClient() as client:
-        # 3. Make a GET request (not a POST)
         response = await client.get(url, headers=headers)
 
-        # 4. Catch any expired token or permission errors
         if response.status_code != 200:
             print("Error fetching user profile:", response.text)
             return None
         
-        # 5. Return the parsed JSON array
         return response.json()
+
 
 @app.get("/user_info")
 async def user_info(request: Request):
-    # 1. Get the secure session ID from the browser's cookie
     session_id = request.cookies.get("epic_session")
-
-    # 2. Check if the session exists in our backend state
-    # (Using .get() on state prevents a KeyError if the server restarted and "sessions" is empty)
     sessions = state.get("sessions", {})
+    
     if not session_id or session_id not in sessions:
         raise HTTPException(status_code=401, detail="Invalid or missing session")
 
-    # 3. Retrieve the secure Epic credentials from memory
     session_data = sessions[session_id]
-    access_token = session_data["access_token"]
-    account_id = session_data["account_id"]
+    epic_user_data = await get_user_information(access_token=session_data["access_token"], account_id=session_data["account_id"])
 
-    # 4. Fetch the real user data from Epic using your existing helper function
-    user_data = await get_user_information(access_token=access_token, account_id=account_id)
-
-    # 5. Handle expired tokens (e.g., the 2 hours passed)
-    if not user_data:
-        # Clean up the dead session so it doesn't clutter your server memory
+    if not epic_user_data:
         del state["sessions"][session_id]
         raise HTTPException(status_code=401, detail="Epic token expired or invalid")
-    print(user_data)
-    # 6. Return the live Epic Games user profile to your frontend
-    return user_data[0]
+        
+    frontend_payload = epic_user_data[0]
+    
+    # Enrich the payload with data from the linked_accounts ledger
+    try:
+        supabase = state.get("supabase")
+        epic_id = frontend_payload["accountId"]
+        
+        player_resp = await supabase.table("players").select("id").eq("epic_id", epic_id).execute()
+        
+        if player_resp.data:
+            player_id = player_resp.data[0]["id"]
+            
+            # Fetch all ACTIVE accounts for this player
+            ledger_resp = await supabase.table("linked_accounts").select("platform, platform_id").eq("player_id", player_id).eq("is_active", True).execute()
+            
+            # Map them directly to the payload so the Next.js ui can check `user.steam_id`
+            for link in ledger_resp.data:
+                field_name = f"{link['platform']}_id"
+                frontend_payload[field_name] = link["platform_id"]
+                
+    except Exception as e:
+        print(f"Failed to enrich payload with ledger data: {e}")
+
+    return frontend_payload
 
 
 @app.post("/auth/logout")
 async def logout():
     response = JSONResponse({"success": True})
-
-    response.delete_cookie(
-        key="epic_session",
-        path="/"
-    )
-
+    response.delete_cookie(key="epic_session", path="/")
     return response
 
 
@@ -253,10 +362,12 @@ async def health_check():
     return {"status": "online", "message": "The analytics engine is listening."}
 
 
-# logic for rest api call for upload replay, TODO: save to database and check for duplicates, cannot upload same file
+# ==========================================
+# REPLAY PARSING
+# ==========================================
+
 @app.post("/upload_replay/")
 async def upload_replay(file: UploadFile = File(...)):
-    # 1. Save file to local storage
     replay_id = str(uuid.uuid4())
     file_location = os.path.join(STORAGE_DIR, f"{replay_id}.replay")
     
@@ -264,11 +375,9 @@ async def upload_replay(file: UploadFile = File(...)):
         with open(file_location, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # 2. Parse the replay (using the memory-safe disk method)
         parsed_stats = await parse_replay(file_location)
         
-        # 3. Cleanup the raw replay file after parsing (keeping for now so commented out)
-        #os.remove(file_location)
+        # os.remove(file_location)
 
         return {
             "match_id": replay_id,
@@ -277,63 +386,47 @@ async def upload_replay(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# parse the selected replay using rrrocket and then extract the data from the replay
 async def parse_replay(path: str):
     temp_json_path = f"{path}.json"
     
     with open(temp_json_path, "w") as f:
-        # We run rrrocket and send stdout directly to the file
         subprocess.run(
             ["bin/rrrocket", "-p", path],
             stdout=f,
             check=True
         )
 
-    # Now load the file (In a bigger project, use 'ijson' to stream this line by line)
     with open(temp_json_path, "r") as f:
         replay_data = json.load(f)
     
-    # Extract the stats
     stats = extract_match_data(replay_data)
-    
-    # Cleanup temp JSON ( keeping for now )
-    #os.remove(temp_json_path)
+    # os.remove(temp_json_path)
     
     return stats
 
-
-# get user stats from json file
 def extract_match_data(replay_json):
     props = replay_json.get("properties", {})
     player_stats_raw = props.get("PlayerStats", [])
     
-    # 1. Grab Match Metadata
     match_id = props.get("Id", "Unknown_Match_ID")
     team_0_score = props.get("Team0Score", 0)
     team_1_score = props.get("Team1Score", 0)
     
     extracted_players = []
     
-    # 2. Loop through the PlayerStats array
     for player in player_stats_raw:
-        # We usually don't want to save Bot stats to the database
         if player.get("bBot", False):
             continue
             
         name = player.get("Name", "Unknown")
-        
-        # 3. Smart ID Extraction (Handles both Steam and Epic)
         user_id = player.get("OnlineID", "")
+        
         if user_id == "0" or user_id == "":
-            # Dig into the nested PlayerID object for Epic accounts
             user_id = player.get("PlayerID", {}).get("fields", {}).get("EpicAccountId", "Unknown_ID")
         
-        # Clean up the platform string (e.g., "OnlinePlatform_Steam" -> "Steam")
         platform_raw = player.get("Platform", {}).get("value", "")
         platform = platform_raw.replace("OnlinePlatform_", "")
         
-        # 4. Build the clean dictionary for this player
         extracted_players.append({
             "username": name,
             "user_id": user_id,
@@ -352,12 +445,3 @@ def extract_match_data(replay_json):
         "team_1_score": team_1_score,
         "players": extracted_players
     }
-
-
-
-
-# login logic eventually 
-@app.post("/login/")
-async def login():
-    return {"Token": "MyToken"}
-
