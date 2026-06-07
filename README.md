@@ -8,4 +8,4 @@ python3 -m venv venv
 source venv/bin/activate
 
 
-Running in Python : uvicorn main:app --reload
+Running in Python : uvicorn api.main:app --reload --host localhost
