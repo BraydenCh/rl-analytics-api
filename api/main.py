@@ -3,10 +3,12 @@ from fastapi import Cookie, FastAPI, File, UploadFile, HTTPException
 import shutil
 import os
 import json
+import secrets
 import subprocess
 import uuid
 import base64
 from contextlib import asynccontextmanager
+import jwt
 from supabase import create_async_client
 from dotenv import load_dotenv
 from fastapi import Request, Query
@@ -63,12 +65,230 @@ RETURN_TO = "http://localhost:8000/auth/steam/callback"
 FRONTEND_PROFILE_URL = "http://localhost:3000/profile"
 
 
+
+async def get_xbox_profile(microsoft_access_token: str):
+    """
+    Exchanges a standard Microsoft OAuth access token for an Xbox Live token,
+    then an XSTS token, and finally extracts the Global XUID and Gamertag.
+    """
+    async with httpx.AsyncClient() as client:
+        
+        # ---------------------------------------------------------
+        # STEP 1: Exchange Microsoft Token for Xbox Live (XBL) Token
+        # ---------------------------------------------------------
+        xbl_url = "https://user.auth.xboxlive.com/user/authenticate"
+        xbl_payload = {
+            "Properties": {
+                "AuthMethod": "RPS",
+                "SiteName": "user.auth.xboxlive.com",
+                # The 'd=' prefix is strictly required by Xbox Live
+                "RpsTicket": f"d={microsoft_access_token}" 
+            },
+            "RelyingParty": "http://auth.xboxlive.com",
+            "TokenType": "JWT"
+        }
+        
+        xbl_resp = await client.post(
+            xbl_url, 
+            json=xbl_payload, 
+            headers={"Content-Type": "application/json", "Accept": "application/json"}
+        )
+        
+        if xbl_resp.status_code != 200:
+            print("XBL Exchange Failed:", xbl_resp.text)
+            return None
+            
+        xbl_token = xbl_resp.json().get("Token")
+
+        # ---------------------------------------------------------
+        # STEP 2: Exchange XBL Token for Xbox Secure Token (XSTS)
+        # ---------------------------------------------------------
+        xsts_url = "https://xsts.auth.xboxlive.com/xsts/authorize"
+        xsts_payload = {
+            "Properties": {
+                "SandboxId": "RETAIL",
+                "UserTokens": [xbl_token]
+            },
+            # This relying party asks for standard Xbox profile data
+            "RelyingParty": "http://xboxlive.com", 
+            "TokenType": "JWT"
+        }
+        
+        xsts_resp = await client.post(
+            xsts_url, 
+            json=xsts_payload, 
+            headers={"Content-Type": "application/json", "Accept": "application/json"}
+        )
+        
+        if xsts_resp.status_code != 200:
+            print("XSTS Exchange Failed:", xsts_resp.text)
+            return None
+
+        # ---------------------------------------------------------
+        # STEP 3: Extract the True XUID and Gamertag
+        # ---------------------------------------------------------
+        xsts_data = xsts_resp.json()
+        
+        # The profile info lives inside DisplayClaims -> xui
+        claims = xsts_data.get("DisplayClaims", {}).get("xui", [{}])[0]
+        
+        # This will be your 253... ID!
+        true_xuid = claims.get("xid") 
+        gamertag = claims.get("gtg")
+        
+        return {
+            "xuid": true_xuid,
+            "gamertag": gamertag
+        }
+
+
 # ==========================================
-# STEAM AUTHENTICATION & LINKING
+#  AUTHENTICATION & LINKING
 # ==========================================
+
+@app.get("/auth/login/xbox")
+async def xbox_login():
+    xbox_client_id = os.getenv("XBOX_CLIENT_ID")
+    xbox_redirect_uri = os.getenv("XBOX_REDIRECT_URI")
+    # 1. Generate a random state string to prevent CSRF attacks
+    xbox_state = secrets.token_urlsafe(16)
+    
+    # 2. Build the Microsoft authorization URL
+    auth_url = (
+        "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize"
+        f"?client_id={xbox_client_id}"
+        "&response_type=code"
+        f"&redirect_uri={xbox_redirect_uri}"
+        # openid and profile are required to get the id_token back
+        "&scope=XboxLive.signin offline_access openid profile" 
+        f"&state={xbox_state}"
+    )
+    
+    # 3. Redirect the user to Microsoft, and save the state in a cookie to check later
+    response = RedirectResponse(url=auth_url)
+    response.set_cookie(key="oauth_state", value=xbox_state, httponly=True, max_age=300)
+    
+    return response
+
+@app.get("/auth/xbox/callback")
+async def xbox_callback(
+    request: Request, 
+    epic_session: str = Cookie(None), 
+    oauth_state: str = Cookie(None)
+):
+    xbox_client_id = os.getenv("XBOX_CLIENT_ID")
+    xbox_redirect_uri = os.getenv("XBOX_REDIRECT_URI")
+    xbox_client_secret = os.getenv("XBOX_CLIENT_SECRET")
+    # 1. Ensure they are logged into your app first
+    if not epic_session:
+        raise HTTPException(status_code=401, detail="You must be logged in to link an account.")
+
+    # 2. Grab the query parameters sent back by Microsoft
+    code = request.query_params.get("code")
+    xbox_state = request.query_params.get("state")
+
+    # 3. Validate the state parameter matches the cookie we set earlier
+    if not xbox_state or xbox_state != oauth_state:
+        raise HTTPException(status_code=400, detail="State mismatch. Possible CSRF attack.")
+
+    if not code:
+        raise HTTPException(status_code=400, detail="No authorization code provided by Microsoft.")
+
+    # 4. Exchange the temporary code for actual tokens
+    async with httpx.AsyncClient() as client:
+        token_response = await client.post(
+            "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
+            data={
+                "client_id": xbox_client_id,
+                "client_secret": xbox_client_secret,
+                "code": code,
+                "redirect_uri": xbox_redirect_uri,
+                "grant_type": "authorization_code",
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"}
+        )
+
+    if token_response.status_code != 200:
+        raise HTTPException(status_code=400, detail=f"Token exchange failed: {token_response.text}")
+
+    tokens = token_response.json()
+    
+    # 5. Extract the Microsoft ID from the id_token
+    id_token = tokens.get("id_token")
+    if not id_token:
+        raise HTTPException(status_code=400, detail="No id_token received from Microsoft.")
+
+    # We skip signature verification here because we just received this token 
+    # directly from Microsoft over a secure HTTPS backend-to-backend call.
+    decoded_token = jwt.decode(id_token, options={"verify_signature": False})
+    
+
+
+    access_token = tokens.get("access_token")
+
+    res = await get_xbox_profile(access_token)
+    xuid = res.get("xuid")
+
+    # 6. Database Time
+    # You now have `epic_session` (who they are in your app) 
+    # and `microsoft_id` (who they are on Xbox). Link them!
+    # 
+    # Example:
+    # user = await db.get_user_by_session(epic_session)
+    # await db.update_user(user.id, xbox_id=microsoft_id)
+
+     # Resolve Session to internal IDs
+    if not epic_session or epic_session not in state.get("sessions", {}):
+        raise HTTPException(status_code=401, detail="Missing or invalid Epic session cookie")
+        
+    epic_id = state["sessions"][epic_session]["account_id"]
+    supabase = state["supabase"]
+
+    # 1. Get the internal player_id
+    player_resp = await supabase.table("players").select("id").eq("epic_id", epic_id).execute()
+    if not player_resp.data:
+        raise HTTPException(status_code=404, detail="Player record not found. Please log out and back in.")
+    
+    player_id = player_resp.data[0]["id"]
+
+    # 2. Upsert into the linked_accounts ledger
+    try:
+        existing = await supabase.table("linked_accounts").select("id").eq("player_id", player_id).eq("platform", "dingo").execute()
+
+        if existing.data:
+            # Reactivate previously unlinked account
+            await supabase.table("linked_accounts").update({
+                "platform_id": xuid,
+                "is_active": True,
+                "unlinked_at": None,
+                "linked_at": datetime.now(timezone.utc).isoformat()
+            }).eq("id", existing.data[0]["id"]).execute()
+        else:
+            # First time linking
+            await supabase.table("linked_accounts").insert({
+                "player_id": player_id,
+                "platform": "dingo",
+                "platform_id": xuid,
+                "is_active": True
+            }).execute()
+
+    except Exception as e:
+        print(f"DB Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save account link to ledger.")
+
+
+
+    # 7. Clean up the state cookie and redirect them back to their dashboard
+    response = RedirectResponse(url=FRONTEND_PROFILE_URL)
+    response.delete_cookie("oauth_state")
+    
+    return response
+
+
 
 @app.get("/auth/login/steam")
 async def steam_login():
+
     params = {
         "openid.ns": "http://specs.openid.net/auth/2.0",
         "openid.mode": "checkid_setup",
