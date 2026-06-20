@@ -392,8 +392,7 @@ async def steam_unlink(epic_session: str = Cookie(None)):
         raise HTTPException(status_code=500, detail="Failed to sever link.")
 
     # A simple redirect back to the profile page upon successful unlinking
-    return RedirectResponse(url=FRONTEND_PROFILE_URL, status_code=303)
-
+    return {"status": "success", "message": "Steam unlinked successfully"}
 
 @app.get("/user_info")
 async def user_info(request: Request):
