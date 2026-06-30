@@ -492,7 +492,16 @@ async def parse_replay(path: str):
 def extract_match_data(replay_json):
     props = replay_json.get("properties", {})
     player_stats_raw = props.get("PlayerStats", [])
-    
+    replay_name = props.get("ReplayName", None)
+    date = props.get("Date")
+    map_name = props.get("MapName")
+    match_type=props.get("MatchType")
+    print(date)
+    print(map_name)
+    print(match_type)
+    if replay_name is None:
+        replay_name = f"{date}_{match_type}_Match"
+    print(replay_name)
     match_id = props.get("Id", "Unknown_Match_ID")
     team_0_score = props.get("Team0Score", 0)
     team_1_score = props.get("Team1Score", 0)
