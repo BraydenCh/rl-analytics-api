@@ -447,29 +447,121 @@ async def health_check():
     return {"status": "online", "message": "The analytics engine is listening."}
 
 
-# ==========================================
-# REPLAY PARSING
-# ==========================================
-
 @app.post("/upload_replay/")
-async def upload_replay(file: UploadFile = File(...)):
-    replay_id = str(uuid.uuid4())
-    file_location = os.path.join(STORAGE_DIR, f"{replay_id}.replay")
+async def upload_replay(request: Request, file: UploadFile = File(...)):
+    supabase = state["supabase"]
+    
+    # ==========================================
+    # 1. AUTHENTICATION
+    # ==========================================
+    session_id = request.cookies.get("epic_session")
+    sessions = state.get("sessions", {})
+    
+    if not session_id or session_id not in sessions:
+        raise HTTPException(status_code=401, detail="Invalid or missing session")
+
+    session_data = sessions[session_id]
+    epic_account_id = session_data["account_id"]
+    
+    # ADDED AWAIT HERE
+    user_resp = await supabase.table("users").select("id").eq("epic_account_id", epic_account_id).execute()
+    
+    if not user_resp.data:
+        raise HTTPException(status_code=404, detail="User not found in database.")
+        
+    uploader_user_id = user_resp.data[0]["id"]
+
+    # ==========================================
+    # 2. FILE UPLOAD & PARSING
+    # ==========================================
+    temp_file_id = str(uuid.uuid4())
+    file_location = os.path.join(STORAGE_DIR, f"{temp_file_id}.replay")
     
     try:
         with open(file_location, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        parsed_stats = await parse_replay(file_location)
+        stats = await parse_replay(file_location)
+        #stats = parsed_stats.get("stats", {})
         
-        # os.remove(file_location)
+        true_match_id = stats.get("match_id")
+        
+        if not true_match_id:
+            raise ValueError("Parsed replay does not contain a match_id.")
+
+        # ==========================================
+        # 3. DATABASE INSERTION LOGIC
+        # ==========================================
+        
+        # ADDED AWAIT HERE
+        existing_match = await supabase.table("matches").select("id").eq("id", true_match_id).execute()
+
+        # SCENARIO A: MATCH ALREADY EXISTS
+        if existing_match.data:
+            try:
+                # ADDED AWAIT HERE
+                await supabase.table("user_match_uploads").insert({
+                    "user_id": uploader_user_id, 
+                    "match_id": true_match_id
+                }).execute()
+            except Exception as e:
+                print(f"User already linked to this match: {e}")
+                
+            return {
+                "message": "Replay already exists. Added to your uploads!",
+                "match_id": true_match_id,
+                "stats": stats
+            }
+        
+        # SCENARIO B: BRAND NEW MATCH
+        match_data = {
+            "id": true_match_id, 
+            "team_0_score": stats.get("team_0_score", 0),
+            "team_1_score": stats.get("team_1_score", 0),
+            #"name": stats.get("replay_name"),
+        }
+        
+        # ADDED AWAIT HERE
+        await supabase.table("matches").insert(match_data).execute()
+
+        players_data = stats.get("players", [])
+        player_stats_inserts = []
+        
+        for player in players_data:
+            player_stats_inserts.append({
+                "match_id": true_match_id,
+                "username": player.get("username"),
+                "team": player.get("team"),
+                "score": player.get("score"),
+                "goals": player.get("goals"),
+                "assists": player.get("assists"),
+                "saves": player.get("saves"),
+                "shots": player.get("shots")
+            })
+            
+        if player_stats_inserts:
+            # ADDED AWAIT HERE
+            await supabase.table("player_match_stats").insert(player_stats_inserts).execute()
+
+        # ADDED AWAIT HERE
+        await supabase.table("user_match_uploads").insert({
+            "user_id": uploader_user_id, 
+            "match_id": true_match_id
+        }).execute()
 
         return {
-            "match_id": replay_id,
-            "stats": parsed_stats
+            "message": "Brand new replay uploaded and processed successfully!",
+            "match_id": true_match_id,
+            "stats": stats
         }
+        
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if os.path.exists(file_location):
+            os.remove(file_location)
 
 async def parse_replay(path: str):
     temp_json_path = f"{path}.json"
@@ -537,5 +629,6 @@ def extract_match_data(replay_json):
         "match_id": match_id,
         "team_0_score": team_0_score,
         "team_1_score": team_1_score,
+        #"replay_name": replay_name,
         "players": extracted_players
     }
