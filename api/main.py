@@ -565,7 +565,8 @@ async def upload_replay(request: Request, file: UploadFile = File(...)):
                 "goals": player.get("goals"),
                 "assists": player.get("assists"),
                 "saves": player.get("saves"),
-                "shots": player.get("shots")
+                "shots": player.get("shots"),
+                "platform":player.get("platform"),
             })
             
         if player_stats_inserts:
@@ -657,3 +658,25 @@ def extract_match_data(replay_json):
         "players": extracted_players,
         "replay_name": replay_name,
     }
+
+@app.get("/matches/")
+async def get_all_matches(limit: int = 50):
+    supabase = state["supabase"]
+    
+    try:
+        # We specify exactly which columns we want from matches, 
+        # and exactly which columns we want from player_match_stats.
+        matches_resp = await supabase.table("matches").select(
+            "id, name, team_0_score, team_1_score, created_at, player_match_stats(player_id, username, platform, team)"
+        ).order("created_at", desc=True).limit(limit).execute()
+        
+        return {
+            "status": "success",
+            "count": len(matches_resp.data),
+            "matches": matches_resp.data
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
