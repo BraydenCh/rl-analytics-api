@@ -690,3 +690,30 @@ async def get_all_matches(limit: int = 50):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/matches/{match_id}")
+async def get_single_match(match_id: str):
+    supabase = state["supabase"]
+    
+    try:
+        # Query the exact match ID and pull all inner player_match_stats rows
+        match_resp = await supabase.table("matches").select(
+            "id, name, team_0_score, team_1_score, created_at, player_match_stats(player_id, username, platform, team, score, goals, assists, saves, shots)"
+        ).eq("id", match_id).execute()
+        
+        # If no data returns, or the array is empty, hit them with a 404
+        if not match_resp.data:
+            raise HTTPException(status_code=404, detail="Match not found.")
+            
+        return {
+            "status": "success",
+            "match": match_resp.data[0] # Return the single match object directly
+        }
+        
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
