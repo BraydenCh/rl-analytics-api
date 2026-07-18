@@ -484,7 +484,6 @@ async def upload_replay(request: Request, file: UploadFile = File(...)):
             shutil.copyfileobj(file.file, buffer)
 
         stats = await parse_replay(file_location)
-        
         true_match_id = stats.get("match_id")
         
         if not true_match_id:
@@ -493,7 +492,6 @@ async def upload_replay(request: Request, file: UploadFile = File(...)):
         # ==========================================
         # 3. DATABASE INSERTION LOGIC
         # ==========================================
-        
         existing_match = await supabase.table("matches").select("id").eq("id", true_match_id).execute()
 
         # SCENARIO A: MATCH ALREADY EXISTS
@@ -520,71 +518,83 @@ async def upload_replay(request: Request, file: UploadFile = File(...)):
             "name": stats.get("replay_name"),
         }
         
-        await supabase.table("matches").insert(match_data).execute()
+        match_inserted = False # Track if we need to roll back
 
-        # ==========================================
-        # 4. GHOST PROFILE & STAT INSERTION
-        # ==========================================
-        players_data = stats.get("players", [])
-        player_stats_inserts = []
-        
-        for player in players_data:
-            platform_id = player.get("user_id") 
-            platform_name = player.get("platform")
+        try:
+            # 1. Insert the root match
+            await supabase.table("matches").insert(match_data).execute()
+            match_inserted = True # We successfully wrote the match to the DB
+
+            # ==========================================
+            # 4. GHOST PROFILE & STAT INSERTION
+            # ==========================================
+            players_data = stats.get("players", [])
+            player_stats_inserts = []
             
-            internal_player_id = None
-            
-            if platform_id and platform_id != "Unknown_ID":
-                # Check if we have seen this Platform ID before
-                lookup_resp = await supabase.table("linked_accounts").select("player_id").eq("platform_id", platform_id).execute()
+            for player in players_data:
+                platform_id = player.get("user_id") 
+                platform_name = player.get("platform")
                 
-                if lookup_resp.data:
-                    # Player exists! Grab their UUID
-                    internal_player_id = lookup_resp.data[0]["player_id"]
-                else:
-                    # CREATE GHOST PROFILE
-                    # 1. Insert a blank row to generate a new UUID
-                    new_player_resp = await supabase.table("players").insert({}).execute()
-                    internal_player_id = new_player_resp.data[0]["id"]
+                internal_player_id = None
+                
+                if platform_id and platform_id != "Unknown_ID":
+                    lookup_resp = await supabase.table("linked_accounts").select("player_id").eq("platform_id", platform_id).execute()
                     
-                    # 2. Add their platform ID to the ledger so we recognize them next time
-                    await supabase.table("linked_accounts").insert({
-                        "player_id": internal_player_id,
-                        "platform": platform_name,
-                        "platform_id": platform_id,
-                        "is_active": True
-                    }).execute()
+                    if lookup_resp.data:
+                        internal_player_id = lookup_resp.data[0]["player_id"]
+                    else:
+                        # CREATE GHOST PROFILE
+                        new_player_resp = await supabase.table("players").insert({}).execute()
+                        internal_player_id = new_player_resp.data[0]["id"]
+                        
+                        await supabase.table("linked_accounts").insert({
+                            "player_id": internal_player_id,
+                            "platform": platform_name,
+                            "platform_id": platform_id,
+                            "is_active": True
+                        }).execute()
 
-            # Append stats using the valid UUID
-            player_stats_inserts.append({
+                player_stats_inserts.append({
+                    "match_id": true_match_id,
+                    "player_id": internal_player_id,
+                    "username": player.get("username"),
+                    "team": player.get("team"),
+                    "score": player.get("score"),
+                    "goals": player.get("goals"),
+                    "assists": player.get("assists"),
+                    "saves": player.get("saves"),
+                    "shots": player.get("shots"),
+                    "platform": player.get("platform"),
+                })
+                
+            # 2. Insert the player stats
+            if player_stats_inserts:
+                await supabase.table("player_match_stats").insert(player_stats_inserts).execute()
+
+            # 3. Link to the uploader
+            await supabase.table("user_match_uploads").insert({
+                "user_id": uploader_user_id, 
+                "match_id": true_match_id
+            }).execute()
+
+            return {
+                "message": "Brand new replay uploaded and processed successfully!",
                 "match_id": true_match_id,
-                "player_id": internal_player_id,
-                "username": player.get("username"),
-                "team": player.get("team"),
-                "score": player.get("score"),
-                "goals": player.get("goals"),
-                "assists": player.get("assists"),
-                "saves": player.get("saves"),
-                "shots": player.get("shots"),
-                "platform":player.get("platform"),
-            })
+                "stats": stats
+            }
+
+        except Exception as inner_e:
+            # 🚨 THE MANUAL ROLLBACK 🚨
+            print(f"Upload interrupted. Reverting partial database writes. Error: {inner_e}")
+            if match_inserted:
+                # By deleting the root match, cascade rules should wipe the partial stats/uploads
+                await supabase.table("matches").delete().eq("id", true_match_id).execute()
             
-        if player_stats_inserts:
-            await supabase.table("player_match_stats").insert(player_stats_inserts).execute()
-
-        await supabase.table("user_match_uploads").insert({
-            "user_id": uploader_user_id, 
-            "match_id": true_match_id
-        }).execute()
-
-        return {
-            "message": "Brand new replay uploaded and processed successfully!",
-            "match_id": true_match_id,
-            "stats": stats
-        }
-        
+            # Re-raise to trigger the 500 error response
+            raise inner_e
+            
     except Exception as e:
-        traceback.print_exc() # Prints exact error to terminal
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if os.path.exists(file_location):
