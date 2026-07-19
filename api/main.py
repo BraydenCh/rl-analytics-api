@@ -717,3 +717,45 @@ async def get_single_match(match_id: str):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/my_matches")
+async def get_my_matches(request: Request, limit: int = 50):
+    supabase = state["supabase"]
+    
+    # 1. Authenticate the session
+    epic_session = request.cookies.get("epic_session")
+    if not epic_session or epic_session not in state.get("sessions", {}):
+        raise HTTPException(status_code=401, detail="Not logged in")
+        
+    epic_id = state["sessions"][epic_session]["account_id"]
+    
+    try:
+        # 2. Find the user's internal player_id
+        player_resp = await supabase.table("players").select("id").eq("epic_id", epic_id).execute()
+        if not player_resp.data:
+            return {"status": "success", "count": 0, "matches": []}
+            
+        player_id = player_resp.data[0]["id"]
+        
+        # 3. Find all matches they participated in
+        stats_resp = await supabase.table("player_match_stats").select("match_id").eq("player_id", player_id).execute()
+        if not stats_resp.data:
+            return {"status": "success", "count": 0, "matches": []}
+            
+        match_ids = [row["match_id"] for row in stats_resp.data]
+        
+        # 4. Fetch the full match cards
+        matches_resp = await supabase.table("matches").select(
+            "id, name, team_0_score, team_1_score, created_at, player_match_stats(player_id, username, platform, team)"
+        ).in_("id", match_ids).order("created_at", desc=True).limit(limit).execute()
+        
+        return {
+            "status": "success",
+            "count": len(matches_resp.data),
+            "matches": matches_resp.data
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
