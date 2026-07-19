@@ -332,34 +332,78 @@ async def steam_callback(request: Request, epic_session: str = Cookie(None)):
     epic_id = state["sessions"][epic_session]["account_id"]
     supabase = state["supabase"]
 
-    # 1. Get the internal player_id
+    # 1. Get the internal player_id (Your Primary Account)
     player_resp = await supabase.table("players").select("id").eq("epic_id", epic_id).execute()
     if not player_resp.data:
         raise HTTPException(status_code=404, detail="Player record not found. Please log out and back in.")
     
-    player_id = player_resp.data[0]["id"]
+    primary_player_id = player_resp.data[0]["id"]
 
-    # 2. Upsert into the linked_accounts ledger
-    try:
-        existing = await supabase.table("linked_accounts").select("id").eq("player_id", player_id).eq("platform", "steam").execute()
+    # ==========================================
+    # 2. SECURE GHOST MERGE & COLLISION CHECK
+    # ==========================================
+    
+    # See if ANYONE in the database already owns this Steam ID
+    existing_link = await supabase.table("linked_accounts").select("id, player_id, is_active").eq("platform_id", steam_id_64).eq("platform", "Steam").execute()
 
-        if existing.data:
-            # Reactivate previously unlinked account
+    if existing_link.data:
+        existing_owner_id = existing_link.data[0]["player_id"]
+        existing_link_id = existing_link.data[0]["id"]
+        
+        # If the owner isn't the person currently logged in, we need to investigate
+        if existing_owner_id != primary_player_id:
+            
+            # Look up the profile of the person who owns this Steam ID
+            owner_resp = await supabase.table("players").select("epic_id").eq("id", existing_owner_id).execute()
+            
+            if owner_resp.data:
+                owner_epic_id = owner_resp.data[0].get("epic_id")
+                
+                if owner_epic_id is not None:
+                    # 🚨 THE TRAP IS TRIGGERED! This belongs to a Real User. BLOCK IT!
+                    raise HTTPException(
+                        status_code=409, 
+                        detail="This Steam account is already linked to another Rocket League Hub user."
+                    )
+                else:
+                    # 👻 It has no Epic ID. It is a true Ghost. Safe to merge!
+                    try:
+                        # A. Transfer Stats
+                        await supabase.table("player_match_stats").update({
+                            "player_id": primary_player_id
+                        }).eq("player_id", existing_owner_id).execute()
+
+                        # B. Delete Ghost Ledger
+                        await supabase.table("linked_accounts").delete().eq("id", existing_link_id).execute()
+
+                        # C. Delete Ghost Profile
+                        await supabase.table("players").delete().eq("id", existing_owner_id).execute()
+                        print(f"Merged Ghost Profile {existing_owner_id} -> Primary {primary_player_id}")
+                    except Exception as e:
+                        print(f"Failed to merge ghost profile: {e}")
+                        raise HTTPException(status_code=500, detail="Failed to merge past stats.")
+
+        else:
+            # The person logging in already owns this link. Just make sure it's active.
             await supabase.table("linked_accounts").update({
-                "platform_id": steam_id_64,
                 "is_active": True,
                 "unlinked_at": None,
                 "linked_at": datetime.now(timezone.utc).isoformat()
-            }).eq("id", existing.data[0]["id"]).execute()
-        else:
-            # First time linking
-            await supabase.table("linked_accounts").insert({
-                "player_id": player_id,
-                "platform": "steam",
-                "platform_id": steam_id_64,
-                "is_active": True
-            }).execute()
+            }).eq("id", existing_link_id).execute()
+            
+            # Return early since they already owned it
+            return RedirectResponse(url=FRONTEND_PROFILE_URL)
 
+    # ==========================================
+    # 3. First-Time Linking (Insert into Ledger)
+    # ==========================================
+    try:
+        await supabase.table("linked_accounts").insert({
+            "player_id": primary_player_id,
+            "platform": "Steam",
+            "platform_id": steam_id_64,
+            "is_active": True
+        }).execute()
     except Exception as e:
         print(f"DB Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to save account link to ledger.")
