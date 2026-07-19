@@ -718,6 +718,41 @@ async def get_single_match(match_id: str):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     
+@app.get("/players/{player_id}/matches")
+async def get_player_matches(player_id: str, limit: int = 50):
+    supabase = state["supabase"]
+    
+    try:
+        # Step 1: Find all unique match IDs where this player's UUID appears
+        stats_resp = await supabase.table("player_match_stats").select("match_id").eq("player_id", player_id).execute()
+        
+        # If they haven't played any matches, return an empty array early
+        if not stats_resp.data:
+            return {
+                "status": "success",
+                "count": 0,
+                "matches": []
+            }
+            
+        # Extract just the match IDs into a simple Python list
+        match_ids = [row["match_id"] for row in stats_resp.data]
+        
+        # Step 2: Fetch those specific matches, pulling the full roster of player stats with them
+        matches_resp = await supabase.table("matches").select(
+            "id, name, team_0_score, team_1_score, created_at, player_match_stats(player_id, username, platform, team)"
+        ).in_("id", match_ids).order("created_at", desc=True).limit(limit).execute()
+        
+        return {
+            "status": "success",
+            "count": len(matches_resp.data),
+            "matches": matches_resp.data
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    
 @app.get("/my_matches")
 async def get_my_matches(request: Request, limit: int = 50):
     supabase = state["supabase"]
