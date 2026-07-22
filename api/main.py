@@ -905,3 +905,45 @@ async def get_player_stats(player_id: str):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/user_uploads")
+async def get_user_uploads(request: Request, limit: int = 50):
+    supabase = state["supabase"]
+    
+    # 1. Authenticate the session
+    epic_session = request.cookies.get("epic_session")
+    if not epic_session or epic_session not in state.get("sessions", {}):
+        raise HTTPException(status_code=401, detail="Not logged in")
+        
+    epic_account_id = state["sessions"][epic_session]["account_id"]
+    
+    try:
+        # 2. Find the user's ID in the web-app `users` table
+        user_resp = await supabase.table("users").select("id").eq("epic_account_id", epic_account_id).execute()
+        if not user_resp.data:
+            return {"status": "success", "count": 0, "matches": []}
+            
+        user_id = user_resp.data[0]["id"]
+        
+        # 3. Find all matches this user has uploaded
+        uploads_resp = await supabase.table("user_match_uploads").select("match_id").eq("user_id", user_id).execute()
+        if not uploads_resp.data:
+            return {"status": "success", "count": 0, "matches": []}
+            
+        match_ids = [row["match_id"] for row in uploads_resp.data]
+        
+        # 4. Fetch the full match cards using the exact same format as the homepage
+        matches_resp = await supabase.table("matches").select(
+            "id, name, team_0_score, team_1_score, created_at, player_match_stats(player_id, username, platform, team)"
+        ).in_("id", match_ids).order("created_at", desc=True).limit(limit).execute()
+        
+        return {
+            "status": "success",
+            "count": len(matches_resp.data),
+            "matches": matches_resp.data
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
