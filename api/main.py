@@ -947,3 +947,50 @@ async def get_user_uploads(request: Request, limit: int = 50):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.delete("/matches/{match_id}")
+async def delete_match(match_id: str, request: Request):
+    supabase = state["supabase"]
+    
+    # 1. Authenticate the session
+    epic_session = request.cookies.get("epic_session")
+    if not epic_session or epic_session not in state.get("sessions", {}):
+        raise HTTPException(status_code=401, detail="Not logged in")
+        
+    epic_account_id = state["sessions"][epic_session]["account_id"]
+    
+    try:
+        # 2. Get the internal user_id
+        user_resp = await supabase.table("users").select("id").eq("epic_account_id", epic_account_id).execute()
+        if not user_resp.data:
+            raise HTTPException(status_code=404, detail="User record not found")
+            
+        user_id = user_resp.data[0]["id"]
+        
+        # 3. SECURITY CHECK: Verify this user actually uploaded this specific match
+        ownership_resp = await supabase.table("user_match_uploads").select("id").eq("match_id", match_id).eq("user_id", user_id).execute()
+        
+        if not ownership_resp.data:
+            raise HTTPException(
+                status_code=403, 
+                detail="Forbidden: You do not have permission to delete this match."
+            )
+            
+        # 4. Execute the Deletion
+        # We manually delete the child rows first just in case your Supabase 
+        # foreign keys aren't set to "ON DELETE CASCADE".
+        
+        await supabase.table("player_match_stats").delete().eq("match_id", match_id).execute()
+        await supabase.table("user_match_uploads").delete().eq("match_id", match_id).execute()
+        
+        # Finally, delete the core match record
+        await supabase.table("matches").delete().eq("id", match_id).execute()
+        
+        return {"status": "success", "message": "Match permanently deleted"}
+        
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="An error occurred while deleting the match.")
