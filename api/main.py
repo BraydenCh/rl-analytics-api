@@ -17,8 +17,8 @@ import httpx
 from datetime import datetime, timezone
 import urllib
 from api.app_state import state
-from api.epic_auth_utils import get_user_information
-from api.routes.epic_auth import router as epic_auth_router
+from api.utils.epic_auth_utils import get_user_information
+from api.routes.auth.epic import router as epic_auth_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

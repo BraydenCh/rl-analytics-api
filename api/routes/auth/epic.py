@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 
-from api.epic_auth_utils import handle_epic_auth_callback
+from api.utils.epic_auth_utils import handle_epic_auth_callback
 
 router = APIRouter()
 
