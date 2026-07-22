@@ -797,8 +797,8 @@ async def get_player_matches(player_id: str, limit: int = 50):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     
-@app.get("/my_matches")
-async def get_my_matches(request: Request, limit: int = 50):
+@app.get("/user_matches")
+async def get_user_matches(request: Request, limit: int = 50):
     supabase = state["supabase"]
     
     # 1. Authenticate the session
@@ -839,8 +839,8 @@ async def get_my_matches(request: Request, limit: int = 50):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/my_stats")
-async def get_my_stats(request: Request):
+@app.get("/user_stats")
+async def get_user_stats(request: Request):
     supabase = state["supabase"]
     
     # 1. Authenticate the session
@@ -876,6 +876,31 @@ async def get_my_stats(request: Request):
         
     except HTTPException as he:
         raise he
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/players/{player_id}/stats")
+async def get_player_stats(player_id: str):
+    supabase = state["supabase"]
+    
+    try:
+        # Fetch the aggregated stats from your database view for this specific player
+        stats_resp = await supabase.table("player_career_stats").select("*").eq("player_id", player_id).execute()
+        
+        # If they haven't played any matches yet, the view might return empty
+        if not stats_resp.data:
+            return {
+                "status": "success",
+                "stats": None
+            }
+            
+        return {
+            "status": "success",
+            "stats": stats_resp.data[0] # Return the single aggregated row
+        }
+        
     except Exception as e:
         import traceback
         traceback.print_exc()
