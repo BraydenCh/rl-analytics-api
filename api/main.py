@@ -658,14 +658,32 @@ async def get_user_matches(request: Request, limit: int = 50):
             
         player_id = player_resp.data[0]["id"]
         
-        # 3. Find all matches they participated in
-        stats_resp = await supabase.table("player_match_stats").select("match_id").eq("player_id", player_id).execute()
+        # 3. THE FIX: Consult the linked_accounts ledger first
+        links_resp = await supabase.table("linked_accounts") \
+            .select("platform") \
+            .eq("player_id", player_id) \
+            .eq("is_active", True) \
+            .execute()
+            
+        active_platforms = [link["platform"] for link in links_resp.data]
+        
+        # If they have no active linked accounts, return empty immediately
+        if not active_platforms:
+            return {"status": "success", "count": 0, "matches": []}
+        
+        # 4. Find matches for the player ONLY on their active platforms
+        stats_resp = await supabase.table("player_match_stats") \
+            .select("match_id") \
+            .eq("player_id", player_id) \
+            .in_("platform", active_platforms) \
+            .execute()
+            
         if not stats_resp.data:
             return {"status": "success", "count": 0, "matches": []}
             
         match_ids = [row["match_id"] for row in stats_resp.data]
         
-        # 4. Fetch the full match cards
+        # 5. Fetch the full match cards
         matches_resp = await supabase.table("matches").select(
             "id, name, team_0_score, team_1_score, created_at, player_match_stats(player_id, username, platform, team)"
         ).in_("id", match_ids).order("created_at", desc=True).limit(limit).execute()
