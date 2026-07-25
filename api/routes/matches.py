@@ -1,11 +1,6 @@
-import os
-import secrets
-from datetime import datetime, timezone
 
-import httpx
-import jwt
-from fastapi import APIRouter, Cookie, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, HTTPException, Request
+
 
 from api.app_state import state
 
