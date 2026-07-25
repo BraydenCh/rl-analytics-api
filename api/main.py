@@ -15,6 +15,7 @@ from api.utils.epic_auth_utils import get_user_information
 from api.routes.auth.epic import router as epic_auth_router
 from api.routes.auth.steam import router as steam_auth_router
 from api.routes.auth.xbox import router as xbox_auth_router
+from api.routes.matches import router as matches_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -44,7 +45,7 @@ app = FastAPI(
 app.include_router(epic_auth_router)
 app.include_router(steam_auth_router)
 app.include_router(xbox_auth_router)
-
+app.include_router(matches_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"], 
