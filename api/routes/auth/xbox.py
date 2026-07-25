@@ -178,3 +178,30 @@ async def xbox_callback(
 	response.delete_cookie("oauth_state")
 	return response
 
+@router.post("/auth/xbox/unlink")
+async def xbox_unlink(epic_session: str = Cookie(None)):
+	if not epic_session or epic_session not in state.get("sessions", {}):
+		raise HTTPException(status_code=401, detail="Authentication required.")
+
+	epic_id = state["sessions"][epic_session]["account_id"]
+	supabase = state["supabase"]
+
+	try:
+		player_resp = await supabase.table("players").select("id").eq("epic_id", epic_id).execute()
+		if not player_resp.data:
+			raise HTTPException(status_code=404, detail="Player record not found.")
+
+		player_id = player_resp.data[0]["id"]
+		
+		await supabase.table("linked_accounts").update({
+			"is_active": False,
+			"unlinked_at": datetime.now(timezone.utc).isoformat()
+		}).eq("player_id", player_id).eq("platform", "dingo").eq("is_active", True).execute()
+
+	except Exception as e:
+		print(f"DB Error: {e}")
+		raise HTTPException(status_code=500, detail="Failed to sever link.")
+
+	return {"status": "success", "message": "Steam unlinked successfully"}
+
+
