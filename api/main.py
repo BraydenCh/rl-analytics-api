@@ -16,6 +16,7 @@ from api.routes.auth.epic import router as epic_auth_router
 from api.routes.auth.steam import router as steam_auth_router
 from api.routes.auth.xbox import router as xbox_auth_router
 from api.routes.matches import router as matches_router
+from api.routes.stats import router as stats_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -46,6 +47,8 @@ app.include_router(epic_auth_router)
 app.include_router(steam_auth_router)
 app.include_router(xbox_auth_router)
 app.include_router(matches_router)
+app.include_router(stats_router)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"], 
@@ -332,73 +335,6 @@ def extract_match_data(replay_json):
         "replay_name": replay_name,
     }
 
-@app.get("/user_stats")
-async def get_user_stats(request: Request):
-    supabase = state["supabase"]
-    
-    # 1. Authenticate the session
-    epic_session = request.cookies.get("epic_session")
-    if not epic_session or epic_session not in state.get("sessions", {}):
-        raise HTTPException(status_code=401, detail="Not logged in")
-        
-    epic_id = state["sessions"][epic_session]["account_id"]
-    
-    try:
-        # 2. Find the user's internal player_id
-        player_resp = await supabase.table("players").select("id").eq("epic_id", epic_id).execute()
-        if not player_resp.data:
-            raise HTTPException(status_code=404, detail="Player record not found.")
-            
-        player_id = player_resp.data[0]["id"]
-        
-        # 3. Fetch the aggregated stats from your database view
-        # We use select("*") since it's a view specifically designed for this data
-        stats_resp = await supabase.table("player_career_stats").select("*").eq("player_id", player_id).execute()
-        
-        # If they exist as a player but haven't played any matches yet, the view might return empty
-        if not stats_resp.data:
-            return {
-                "status": "success",
-                "stats": None
-            }
-            
-        return {
-            "status": "success",
-            "stats": stats_resp.data[0] # Assuming the view aggregates down to 1 row per player
-        }
-        
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-    
-@app.get("/players/{player_id}/stats")
-async def get_player_stats(player_id: str):
-    supabase = state["supabase"]
-    
-    try:
-        # Fetch the aggregated stats from your database view for this specific player
-        stats_resp = await supabase.table("player_career_stats").select("*").eq("player_id", player_id).execute()
-        
-        # If they haven't played any matches yet, the view might return empty
-        if not stats_resp.data:
-            return {
-                "status": "success",
-                "stats": None
-            }
-            
-        return {
-            "status": "success",
-            "stats": stats_resp.data[0] # Return the single aggregated row
-        }
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-    
 @app.get("/user_uploads")
 async def get_user_uploads(request: Request, limit: int = 50):
     supabase = state["supabase"]
