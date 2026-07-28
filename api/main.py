@@ -18,6 +18,7 @@ from api.routes.auth.xbox import router as xbox_auth_router
 from api.routes.matches import router as matches_router
 from api.routes.stats import router as stats_router
 from api.routes.replays import router as replays_router
+from api.routes.auth.logout import router as logout_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_dotenv()
@@ -49,7 +50,7 @@ app.include_router(xbox_auth_router)
 app.include_router(matches_router)
 app.include_router(stats_router)
 app.include_router(replays_router)
-
+app.include_router(logout_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"], 
@@ -100,14 +101,6 @@ async def user_info(request: Request):
         print(f"Failed to enrich payload with ledger data: {e}")
 
     return frontend_payload
-
-
-@app.post("/auth/logout")
-async def logout():
-    response = JSONResponse({"success": True})
-    response.delete_cookie(key="epic_session", path="/")
-    return response
-
 
 @app.get("/")
 async def health_check():
