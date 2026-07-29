@@ -40,6 +40,7 @@ async def user_info(request: Request):
             for link in ledger_resp.data:
                 field_name = f"{link['platform']}_id"
                 frontend_payload[field_name] = link["platform_id"]
+            frontend_payload["player_id"]=player_id
 
     except Exception as e:
         print(f"Failed to enrich payload with ledger data: {e}")
