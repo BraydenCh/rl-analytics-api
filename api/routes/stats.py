@@ -6,7 +6,6 @@ from api.app_state import state
 
 router = APIRouter()
 
-@router.get("/user_stats")
 async def get_user_stats(request: Request):
     supabase = state["supabase"]
     
@@ -49,9 +48,10 @@ async def get_user_stats(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
     
 @router.get("/players/{player_id}/stats")
-async def get_player_stats(player_id: str):
+async def get_player_stats(player_id: str, request: Request = None):
     supabase = state["supabase"]
-    
+    if(player_id == "me"):
+        return await get_user_stats(request)
     try:
         # Fetch the aggregated stats from your database view for this specific player
         stats_resp = await supabase.table("player_career_stats").select("*").eq("player_id", player_id).execute()
