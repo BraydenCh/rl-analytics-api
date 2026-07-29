@@ -57,9 +57,12 @@ async def get_single_match(match_id: str):
         raise HTTPException(status_code=500, detail=str(e))
     
 @router.get("/players/{player_id}/matches")
-async def get_player_matches(player_id: str, limit: int = 50):
+async def get_player_matches(player_id: str, request: Request = None,limit: int = 50):
     supabase = state["supabase"]
-    
+    print(f"Player_ID: {player_id}")
+    if(player_id == "me"):
+        return await get_user_matches(request)
+
     try:
         # Step 1: Find all unique match IDs where this player's UUID appears
         stats_resp = await supabase.table("player_match_stats").select("match_id").eq("player_id", player_id).execute()
@@ -91,7 +94,6 @@ async def get_player_matches(player_id: str, limit: int = 50):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     
-@router.get("/user_matches")
 async def get_user_matches(request: Request, limit: int = 50):
     supabase = state["supabase"]
     
