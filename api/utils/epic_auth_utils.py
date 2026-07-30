@@ -135,5 +135,5 @@ async def handle_epic_auth_callback(code: str):
         max_age=expires_in,
         path="/"
     )
-
+    print(f"Setting Epic Session: {redirect}")
     return redirect
