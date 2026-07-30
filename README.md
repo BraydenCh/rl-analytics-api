@@ -57,6 +57,8 @@ SUPABASE_KEY=your_supabase_service_or_anon_key
 API_BASE_URL=http://localhost:8000
 FRONTEND_BASE_URL=http://localhost:3000
 CORS_ALLOWED_ORIGINS=http://localhost:3000
+SESSION_COOKIE_SECURE=false
+SESSION_COOKIE_SAMESITE=lax
 
 EPIC_CLIENT_ID=your_epic_client_id
 EPIC_CLIENT_SECRET=your_epic_client_secret
@@ -72,6 +74,8 @@ Notes:
 - `API_BASE_URL` controls backend callback URLs such as Steam OpenID realm/return_to.
 - `FRONTEND_BASE_URL` controls frontend redirects after auth flows.
 - `CORS_ALLOWED_ORIGINS` is optional; omit it to allow `FRONTEND_BASE_URL`, or set a comma-separated list for multiple frontend origins.
+- `SESSION_COOKIE_SECURE` is optional; omit it to auto-enable secure cookies when `API_BASE_URL` uses HTTPS.
+- `SESSION_COOKIE_SAMESITE` is optional; omit it to use `lax` for HTTP and `none` for HTTPS.
 
 ## Local Development Setup
 

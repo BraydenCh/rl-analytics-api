@@ -111,8 +111,6 @@ async def handle_epic_auth_callback(code: str):
 
     access_token = token_data.get("access_token")
     account_id = token_data.get("account_id")
-    expires_in = token_data.get("expires_in", 7200)
-
     user_info = await get_user_information(access_token=access_token, account_id=account_id)
 
     success = await insert_or_update_user(user_info=user_info[0])
@@ -125,15 +123,5 @@ async def handle_epic_auth_callback(code: str):
         "account_id": account_id
     }
 
-    redirect = RedirectResponse(url=get_frontend_url("/"))
-    redirect.set_cookie(
-        key="epic_session",
-        value=session_id,
-        httponly=True,
-        secure=False,
-        samesite="lax",
-        max_age=expires_in,
-        path="/"
-    )
-    print(f"Setting Epic Session: {redirect}")
-    return redirect
+    frontend_callback = f"{get_frontend_url('api/auth/callback')}?session={session_id}"
+    return RedirectResponse(url=frontend_callback)

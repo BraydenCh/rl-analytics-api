@@ -1,4 +1,5 @@
 import os
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -22,7 +23,9 @@ def get_api_base_url() -> str:
 
 
 def get_frontend_base_url() -> str:
-    return _strip_trailing_slash(os.getenv("FRONTEND_BASE_URL", "http://localhost:3000"))
+    return _strip_trailing_slash(
+        os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
+    )
 
 
 def get_api_url(path: str = "") -> str:
@@ -39,3 +42,34 @@ def get_cors_allowed_origins() -> list[str]:
         return [get_frontend_base_url()]
 
     return [origin.strip().rstrip("/") for origin in origins.split(",") if origin.strip()]
+
+
+def _env_bool(name: str) -> bool | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def get_cookie_secure() -> bool:
+    secure_override = _env_bool("SESSION_COOKIE_SECURE")
+    if secure_override is not None:
+        return secure_override
+
+    return urlparse(get_api_base_url()).scheme == "https"
+
+
+def get_cookie_samesite() -> str:
+    samesite = os.getenv("SESSION_COOKIE_SAMESITE")
+    if samesite:
+        return samesite.strip().lower()
+
+    return "none" if get_cookie_secure() else "lax"
+
+
+def get_cookie_settings() -> dict[str, bool | str]:
+    return {
+        "secure": get_cookie_secure(),
+        "samesite": get_cookie_samesite(),
+    }

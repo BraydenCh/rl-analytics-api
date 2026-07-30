@@ -8,7 +8,7 @@ from fastapi import APIRouter, Cookie, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from api.app_state import state
-from api.settings import get_frontend_url
+from api.settings import get_cookie_settings, get_frontend_url
 
 router = APIRouter()
 
@@ -83,7 +83,13 @@ async def xbox_login():
 	)
 
 	response = RedirectResponse(url=auth_url)
-	response.set_cookie(key="oauth_state", value=xbox_state, httponly=True, max_age=300)
+	response.set_cookie(
+		key="oauth_state",
+		value=xbox_state,
+		httponly=True,
+		max_age=300,
+		**get_cookie_settings(),
+	)
 	return response
 
 
@@ -174,7 +180,7 @@ async def xbox_callback(
 		raise HTTPException(status_code=500, detail="Failed to save account link to ledger.")
 
 	response = RedirectResponse(url=get_frontend_url("profile"))
-	response.delete_cookie("oauth_state")
+	response.delete_cookie("oauth_state", **get_cookie_settings())
 	return response
 
 @router.post("/auth/xbox/unlink")
