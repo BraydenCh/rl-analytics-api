@@ -11,6 +11,7 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
 from api.app_state import state
 from api.utils.replay_parsing_utils import parse_replay, extract_match_data
+from api.utils.session_utils import require_session
 router = APIRouter()
 
 STORAGE_DIR = "local_storage"
@@ -23,13 +24,7 @@ async def upload_replay(request: Request, file: UploadFile = File(...)):
     # ==========================================
     # 1. AUTHENTICATION
     # ==========================================
-    session_id = request.cookies.get("epic_session")
-    sessions = state.get("sessions", {})
-    
-    if not session_id or session_id not in sessions:
-        raise HTTPException(status_code=401, detail="Invalid or missing session")
-
-    session_data = sessions[session_id]
+    session_data = require_session(request)
     epic_account_id = session_data["account_id"]
     
     user_resp = await supabase.table("users").select("id").eq("epic_account_id", epic_account_id).execute()

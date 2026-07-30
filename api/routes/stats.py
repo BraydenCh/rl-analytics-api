@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 
 from api.app_state import state
+from api.utils.session_utils import require_session
 
 router = APIRouter()
 
@@ -10,11 +11,8 @@ async def get_user_stats(request: Request):
     supabase = state["supabase"]
     
     # 1. Authenticate the session
-    epic_session = request.cookies.get("epic_session")
-    if not epic_session or epic_session not in state.get("sessions", {}):
-        raise HTTPException(status_code=401, detail="Not logged in")
-        
-    epic_id = state["sessions"][epic_session]["account_id"]
+    session_data = require_session(request)
+    epic_id = session_data["account_id"]
     
     try:
         # 2. Find the user's internal player_id

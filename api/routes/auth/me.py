@@ -2,26 +2,23 @@ from fastapi import APIRouter, HTTPException, Request
 
 from api.app_state import state
 from api.utils.epic_auth_utils import get_user_information
+from api.utils.session_utils import get_session_id, require_session
 
 router = APIRouter()
 
 
 @router.get("/user_info")
 async def user_info(request: Request):
-    session_id = request.cookies.get("epic_session")
-    sessions = state.get("sessions", {})
-
-    if not session_id or session_id not in sessions:
-        raise HTTPException(status_code=401, detail="Invalid or missing session")
-
-    session_data = sessions[session_id]
+    session_id = get_session_id(request)
+    session_data = require_session(request)
     epic_user_data = await get_user_information(
         access_token=session_data["access_token"],
         account_id=session_data["account_id"],
     )
 
     if not epic_user_data:
-        del state["sessions"][session_id]
+        if session_id in state.get("sessions", {}):
+            del state["sessions"][session_id]
         raise HTTPException(status_code=401, detail="Epic token expired or invalid")
 
     frontend_payload = epic_user_data[0]

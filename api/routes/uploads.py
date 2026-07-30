@@ -3,6 +3,7 @@ import traceback
 from fastapi import APIRouter, HTTPException, Request
 
 from api.app_state import state
+from api.utils.session_utils import require_session
 
 router = APIRouter()
 
@@ -11,11 +12,8 @@ router = APIRouter()
 async def get_user_uploads(request: Request, limit: int = 50):
     supabase = state["supabase"]
 
-    epic_session = request.cookies.get("epic_session")
-    if not epic_session or epic_session not in state.get("sessions", {}):
-        raise HTTPException(status_code=401, detail="Not logged in")
-
-    epic_account_id = state["sessions"][epic_session]["account_id"]
+    session_data = require_session(request)
+    epic_account_id = session_data["account_id"]
 
     try:
         user_resp = await supabase.table("users").select("id").eq("epic_account_id", epic_account_id).execute()
