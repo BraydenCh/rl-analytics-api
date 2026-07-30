@@ -15,6 +15,7 @@ from api.routes.stats import router as stats_router
 from api.routes.replays import router as replays_router
 from api.routes.uploads import router as uploads_router
 from api.routes.auth.logout import router as logout_router
+from api.settings import get_cors_allowed_origins
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_dotenv()
@@ -52,7 +53,7 @@ app.include_router(uploads_router)
 app.include_router(logout_router)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"], 
+    allow_origins=get_cors_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

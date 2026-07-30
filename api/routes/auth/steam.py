@@ -7,13 +7,11 @@ from fastapi import APIRouter, Cookie, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from api.app_state import state
+from api.settings import get_api_url, get_frontend_url
 
 router = APIRouter()
 
 STEAM_OPENID_URL = "https://steamcommunity.com/openid/login"
-REALM = "http://localhost:8000"
-RETURN_TO = "http://localhost:8000/auth/steam/callback"
-FRONTEND_PROFILE_URL = "http://localhost:3000/profile"
 
 
 @router.get("/auth/login/steam")
@@ -21,8 +19,8 @@ async def steam_login():
 	params = {
 		"openid.ns": "http://specs.openid.net/auth/2.0",
 		"openid.mode": "checkid_setup",
-		"openid.return_to": RETURN_TO,
-		"openid.realm": REALM,
+		"openid.return_to": get_api_url("auth/steam/callback"),
+		"openid.realm": get_api_url(),
 		"openid.identity": "http://specs.openid.net/auth/2.0/identifier_select",
 		"openid.claimed_id": "http://specs.openid.net/auth/2.0/identifier_select",
 	}
@@ -108,7 +106,7 @@ async def steam_callback(request: Request, epic_session: str = Cookie(None)):
 				"linked_at": datetime.now(timezone.utc).isoformat()
 			}).eq("id", existing_link_id).execute()
 
-			return RedirectResponse(url=FRONTEND_PROFILE_URL)
+			return RedirectResponse(url=get_frontend_url("profile"))
 
 	# 3. First-time linking (insert into ledger)
 	try:
@@ -122,7 +120,7 @@ async def steam_callback(request: Request, epic_session: str = Cookie(None)):
 		print(f"DB Error: {e}")
 		raise HTTPException(status_code=500, detail="Failed to save account link to ledger.")
 
-	return RedirectResponse(url=FRONTEND_PROFILE_URL)
+	return RedirectResponse(url=get_frontend_url("profile"))
 
 
 @router.post("/auth/steam/unlink")

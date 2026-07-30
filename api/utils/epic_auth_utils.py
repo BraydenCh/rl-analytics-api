@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from fastapi.responses import RedirectResponse
 
 from api.app_state import state
+from api.settings import get_frontend_url
 
 
 async def get_user_information(access_token: str, account_id: str):
@@ -124,7 +125,7 @@ async def handle_epic_auth_callback(code: str):
         "account_id": account_id
     }
 
-    redirect = RedirectResponse(url="http://localhost:3000/")
+    redirect = RedirectResponse(url=get_frontend_url("/"))
     redirect.set_cookie(
         key="epic_session",
         value=session_id,

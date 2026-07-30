@@ -8,10 +8,9 @@ from fastapi import APIRouter, Cookie, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from api.app_state import state
+from api.settings import get_frontend_url
 
 router = APIRouter()
-
-FRONTEND_PROFILE_URL = "http://localhost:3000/profile"
 
 
 async def get_xbox_profile(microsoft_access_token: str):
@@ -174,7 +173,7 @@ async def xbox_callback(
 		print(f"DB Error: {e}")
 		raise HTTPException(status_code=500, detail="Failed to save account link to ledger.")
 
-	response = RedirectResponse(url=FRONTEND_PROFILE_URL)
+	response = RedirectResponse(url=get_frontend_url("profile"))
 	response.delete_cookie("oauth_state")
 	return response
 
