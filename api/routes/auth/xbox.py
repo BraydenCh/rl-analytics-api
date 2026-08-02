@@ -215,14 +215,24 @@ async def xbox_callback(
             response.delete_cookie("xbox_link_session", **get_cookie_settings())
             return response
 
-    # 2. First-time linking
+    # 2. Create or replace this user's Xbox link
     try:
-        await supabase.table("linked_accounts").insert({
-            "player_id": player_id,
-            "platform": "Dingo",
-            "platform_id": xuid,
-            "is_active": True
-        }).execute()
+        player_link = await supabase.table("linked_accounts").select("id").eq("player_id", player_id).eq("platform", "Dingo").execute()
+
+        if player_link.data:
+            await supabase.table("linked_accounts").update({
+                "platform_id": xuid,
+                "is_active": True,
+                "unlinked_at": None,
+                "linked_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", player_link.data[0]["id"]).execute()
+        else:
+            await supabase.table("linked_accounts").insert({
+                "player_id": player_id,
+                "platform": "Dingo",
+                "platform_id": xuid,
+                "is_active": True
+            }).execute()
 
     except Exception as e:
         print(f"DB Error: {e}")
