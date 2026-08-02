@@ -99,21 +99,32 @@ async def upload_replay(request: Request, file: UploadFile = File(...)):
                 internal_player_id = None
                 
                 if platform_id and platform_id != "Unknown_ID":
-                    lookup_resp = await supabase.table("linked_accounts").select("player_id").eq("platform_id", platform_id).execute()
-                    
-                    if lookup_resp.data:
-                        internal_player_id = lookup_resp.data[0]["player_id"]
+                    if platform_name == "Epic":
+                        player_resp = await supabase.table("players").select("id").eq("epic_id", platform_id).execute()
+
+                        if player_resp.data:
+                            internal_player_id = player_resp.data[0]["id"]
+                        else:
+                            new_player_resp = await supabase.table("players").insert({
+                                "epic_id": platform_id
+                            }).execute()
+                            internal_player_id = new_player_resp.data[0]["id"]
                     else:
-                        # CREATE GHOST PROFILE
-                        new_player_resp = await supabase.table("players").insert({}).execute()
-                        internal_player_id = new_player_resp.data[0]["id"]
+                        lookup_resp = await supabase.table("linked_accounts").select("player_id").eq("platform", platform_name).eq("platform_id", platform_id).execute()
                         
-                        await supabase.table("linked_accounts").insert({
-                            "player_id": internal_player_id,
-                            "platform": platform_name,
-                            "platform_id": platform_id,
-                            "is_active": True
-                        }).execute()
+                        if lookup_resp.data:
+                            internal_player_id = lookup_resp.data[0]["player_id"]
+                        else:
+                            # CREATE GHOST PROFILE
+                            new_player_resp = await supabase.table("players").insert({}).execute()
+                            internal_player_id = new_player_resp.data[0]["id"]
+                            
+                            await supabase.table("linked_accounts").insert({
+                                "player_id": internal_player_id,
+                                "platform": platform_name,
+                                "platform_id": platform_id,
+                                "is_active": True
+                            }).execute()
 
                 player_stats_inserts.append({
                     "match_id": true_match_id,
