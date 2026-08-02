@@ -7,7 +7,8 @@ from fastapi import APIRouter, Cookie, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from api.app_state import state
-from api.settings import get_api_url, get_frontend_url
+from api.settings import get_api_url, get_cookie_settings, get_frontend_url
+from api.utils.session_utils import require_session
 
 router = APIRouter()
 
@@ -15,7 +16,12 @@ STEAM_OPENID_URL = "https://steamcommunity.com/openid/login"
 
 
 @router.get("/auth/login/steam")
-async def steam_login():
+async def steam_login(request: Request):
+	link_session = request.query_params.get("token") or request.cookies.get("epic_session")
+
+	if not link_session or link_session not in state.get("sessions", {}):
+		raise HTTPException(status_code=401, detail="Missing or invalid session for Steam linking")
+
 	params = {
 		"openid.ns": "http://specs.openid.net/auth/2.0",
 		"openid.mode": "checkid_setup",
@@ -27,11 +33,23 @@ async def steam_login():
 
 	query_string = urllib.parse.urlencode(params)
 	redirect_url = f"{STEAM_OPENID_URL}?{query_string}"
-	return RedirectResponse(url=redirect_url)
+	response = RedirectResponse(url=redirect_url)
+	response.set_cookie(
+		key="steam_link_session",
+		value=link_session,
+		httponly=True,
+		max_age=300,
+		**get_cookie_settings(),
+	)
+	return response
 
 
 @router.get("/auth/steam/callback")
-async def steam_callback(request: Request, epic_session: str = Cookie(None)):
+async def steam_callback(
+	request: Request,
+	epic_session: str = Cookie(None),
+	steam_link_session: str = Cookie(None),
+):
 	params = dict(request.query_params)
 
 	if not params or params.get("openid.mode") != "id_res":
@@ -55,10 +73,11 @@ async def steam_callback(request: Request, epic_session: str = Cookie(None)):
 	steam_id_64 = match.group(1)
 
 	# Resolve Session to internal IDs
-	if not epic_session or epic_session not in state.get("sessions", {}):
-		raise HTTPException(status_code=401, detail="Missing or invalid Epic session cookie")
+	session_id = epic_session or steam_link_session
+	if not session_id or session_id not in state.get("sessions", {}):
+		raise HTTPException(status_code=401, detail="Missing or invalid Epic session")
 
-	epic_id = state["sessions"][epic_session]["account_id"]
+	epic_id = state["sessions"][session_id]["account_id"]
 	supabase = state["supabase"]
 
 	# 1. Get the internal player_id (Your Primary Account)
@@ -106,29 +125,41 @@ async def steam_callback(request: Request, epic_session: str = Cookie(None)):
 				"linked_at": datetime.now(timezone.utc).isoformat()
 			}).eq("id", existing_link_id).execute()
 
-			return RedirectResponse(url=get_frontend_url("profile"))
+			response = RedirectResponse(url=get_frontend_url("profile"))
+			response.delete_cookie("steam_link_session", **get_cookie_settings())
+			return response
 
-	# 3. First-time linking (insert into ledger)
+	# 3. Create or replace this user's Steam link
 	try:
-		await supabase.table("linked_accounts").insert({
-			"player_id": primary_player_id,
-			"platform": "Steam",
-			"platform_id": steam_id_64,
-			"is_active": True
-		}).execute()
+		player_link = await supabase.table("linked_accounts").select("id").eq("player_id", primary_player_id).eq("platform", "Steam").execute()
+
+		if player_link.data:
+			await supabase.table("linked_accounts").update({
+				"platform_id": steam_id_64,
+				"is_active": True,
+				"unlinked_at": None,
+				"linked_at": datetime.now(timezone.utc).isoformat(),
+			}).eq("id", player_link.data[0]["id"]).execute()
+		else:
+			await supabase.table("linked_accounts").insert({
+				"player_id": primary_player_id,
+				"platform": "Steam",
+				"platform_id": steam_id_64,
+				"is_active": True
+			}).execute()
 	except Exception as e:
 		print(f"DB Error: {e}")
 		raise HTTPException(status_code=500, detail="Failed to save account link to ledger.")
 
-	return RedirectResponse(url=get_frontend_url("profile"))
+	response = RedirectResponse(url=get_frontend_url("profile"))
+	response.delete_cookie("steam_link_session", **get_cookie_settings())
+	return response
 
 
 @router.post("/auth/steam/unlink")
-async def steam_unlink(epic_session: str = Cookie(None)):
-	if not epic_session or epic_session not in state.get("sessions", {}):
-		raise HTTPException(status_code=401, detail="Authentication required.")
-
-	epic_id = state["sessions"][epic_session]["account_id"]
+async def steam_unlink(request: Request):
+	session_data = require_session(request)
+	epic_id = session_data["account_id"]
 	supabase = state["supabase"]
 
 	try:
